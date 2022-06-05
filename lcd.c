@@ -44,3 +44,7 @@ void CreateChar(uint8_t addr, uint8_t charmap[]) {
     LcdData(charmap[i]); // Write char data.
   }
 }
+
+void LcdClear(){
+    
+}
