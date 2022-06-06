@@ -27,7 +27,7 @@ void InitLCD(void) {
         
     LcdCmd(0x2C);
     LcdCmd(0x0C);
-    LcdClear();
+    //LcdClear();
 }
 
 void LcdCmd(uint8_t cmd){
@@ -43,8 +43,4 @@ void CreateChar(uint8_t addr, uint8_t charmap[]) {
   for (int i=0; i<8; i++) {
     LcdData(charmap[i]); // Write char data.
   }
-}
-
-void LcdClear(){
-    
 }

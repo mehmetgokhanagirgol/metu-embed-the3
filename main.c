@@ -1,4 +1,7 @@
 #include <xc.h>
+#include "Includes.h"
+#include "lcd.h"
+#include <stdio.h>
 
 uint8_t clockCounter = 0;
 uint8_t digitNum = 0;
@@ -15,13 +18,22 @@ uint8_t isRE5Pressed=0;
 
 uint8_t cursorIndex = 0;
 
+int mode = 0; //0 -> text mode, 1 -> custom mode, 2 -> scroll mode
 
-void Pulse(void){
-    PORTBbits.RB5 = 1;
-    __delay_us(30);
-    PORTBbits.RB5 = 0;
-    __delay_us(30);
+// Global value for cursor position in CDM
+// TODO: This should be drawn constantly on seven segment display with customCharCount
+int cursorPosition[2] = {0, 0};
+
+
+void tmr0_isr();
+void adc_isr();
+
+void __interrupt(high_priority) highPriorityISR(void) {
+    if (INTCONbits.TMR0IF) tmr0_isr();
+    if (PIR1bits.ADIF) adc_isr();
+    
 }
+void __interrupt(low_priority) lowPriorityISR(void) {}
 
 void SendBusContents(uint8_t data){
   PORTD = PORTD & 0x0F;           // Clear bus
@@ -31,16 +43,7 @@ void SendBusContents(uint8_t data){
   PORTD = PORTD | ((data<<4)&0xF0);// Put low 4 bits
   Pulse();
 }
-uint8_t customMap[8] = {
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00000,
-};
+uint8_t customMap[8][8];
 
 uint8_t lcdRow[16] = {
   0b00000,
@@ -65,14 +68,7 @@ int characterIndexArray[16]={
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 };
 
-volatile char PREDEFINED[] = " abcdefghijklmnopqrstuvwxyz0123456789";
-
-void __interrupt(high_priority) highPriorityISR(void) {
-    if (INTCONbits.TMR0IF) tmr0_isr();
-    if (PIR1bits.ADIF) adc_isr();
-    
-}
-void __interrupt(low_priority) lowPriorityISR(void) {}
+//volatile char PREDEFINED[] = " abcdefghijklmnopqrstuvwxyz0123456789";
 
 uint8_t changeDigit(uint8_t digitNum){
     switch(digitNum){
@@ -95,26 +91,6 @@ uint8_t changeDigit(uint8_t digitNum){
             PORTHbits.RH3 = 1;
             return ledPositionRow;
     }
-}
-
-void initPorts(){
-     // Set ADC Inputs
-  TRISH = 0x10; // AN12 input RH4
-  TRISJ = 0x00;
-  // Set LCD Outputs
-  TRISB = 0x00; // LCD Control RB2/RB5
-  TRISD = 0x00; // LCD Data  RD[4-7]
-  // Configure ADC
-  ADCON0 = 0x31; // Channel 12; Turn on AD Converter
-  ADCON1 = 0x00; // All analog pins
-  ADCON2 = 0xAA; // Right Align | 12 Tad | Fosc/32
-  ADRESH = 0x00;
-  ADRESL = 0x00;
-  TRISA = 0x00;
-  TRISB = 0x00;
-  TRISC = 0x00;
-  TRISD = 0x00;
-  TRISE = 0x1F;
 }
 
 void sevenSegment(){
@@ -181,16 +157,53 @@ void tmr0_isr(){
 }
 
 void adc_isr() {
+    
     PIR1bits.ADIF = 0; 
-
     unsigned int result = (ADRESH << 8) + ADRESL;
+    if(mode!=2){
+        cursorIndex = result / 64; 
+        PORTBbits.RB2 = 0;
+        SendBusContents(0x80|(cursorIndex & 0xff));
+    }
     
-    cursorIndex = result / 64; 
-    PORTBbits.RB2 = 0;
-    SendBusContents(0x80|(cursorIndex & 0xff));
-    
-    
+    GODONE=1;
 }
+
+
+
+void tmr_init() {
+    T0CON = 0xC7; 
+    T1CON = 0x81; 
+    //tmr_preload();
+}
+
+
+void initPorts(){
+     // Set ADC Inputs
+  TRISH = 0x10; // AN12 input RH4
+  TRISJ = 0x00;
+  // Set LCD Outputs
+  TRISB = 0x00; // LCD Control RB2/RB5
+  TRISD = 0x00; // LCD Data  RD[4-7]
+  // Configure ADC
+  ADCON0 = 0x31; // Channel 12; Turn on AD Converter
+  ADCON1 = 0x00; // All analog pins
+  ADCON2 = 0xAA; // Right Align | 12 Tad | Fosc/32
+  ADRESH = 0x00;
+  ADRESL = 0x00;
+  TRISA = 0x00;
+  TRISB = 0x00;
+  TRISC = 0x00;
+  TRISD = 0x00;
+  TRISE = 0x3F;
+  
+  // Clear all ports to use in CDM
+  PORTA = 0x00;
+  PORTB = 0x00;
+  PORTC = 0x00;
+  PORTD = 0x00;
+}
+
 
 void init_interrupt(){
     INTCONbits.TMR0IE = 1;
@@ -267,33 +280,289 @@ uint8_t checkRE5Pressed(){
 
 
 void scrollInPredefinedChars(int backwardOrForward){ //0 if bacward, 1 if forward
-    PORTBbits.RB2 = 1;
+    
     if(backwardOrForward == 0){
         if(characterIndexArray[cursorIndex]==0){
-            characterIndexArray[cursorIndex]=36;
+            characterIndexArray[cursorIndex]=37;
         }
         characterIndexArray[cursorIndex] -- ;
     }else if(backwardOrForward == 1){
         if(characterIndexArray[cursorIndex]==36){
-            characterIndexArray[cursorIndex]=0;
+            characterIndexArray[cursorIndex]=-1;
         }
         characterIndexArray[cursorIndex]++; 
     }
+    PORTBbits.RB2 = 1;
     
     SendBusContents(PREDEFINED[characterIndexArray[cursorIndex]]);
 }
 
-void scrollInCustomChars(int backwardOrForward){ //0 if bacward, 1 if forward
+void scrollInCustomChars(int backwardOrForward){ //0 if backward, 1 if forward
     
+}
+
+
+// Function to toggle led state of a bit of PORT A
+void ledToggleA(int bitNumber) {
+    switch(bitNumber) {
+        case 0:
+            PORTAbits.RA0 = ~PORTAbits.RA0;
+            break;
+        case 1:
+            PORTAbits.RA1 = ~PORTAbits.RA1;
+            break;
+        case 2:
+            PORTAbits.RA2 = ~PORTAbits.RA2;
+            break;
+        case 3:
+            PORTAbits.RA3 = ~PORTAbits.RA3;
+            break;
+        case 4:
+            PORTAbits.RA4 = ~PORTAbits.RA4;
+            break;
+        case 5:
+            PORTAbits.RA5 = ~PORTAbits.RA5;
+            break;
+        case 6:
+            // This bit's state won't change!
+            PORTAbits.RA6 = ~PORTAbits.RA6;
+            break;
+        case 7:
+            // This bit's state won't change!
+            PORTAbits.RA7 = ~PORTAbits.RA7;
+            break;
+        default:
+            break;
+    }
+}
+
+
+// Function to toggle led state of a bit of PORT B
+void ledToggleB(int bitNumber) {
+    switch(bitNumber) {
+        case 0:
+            PORTBbits.RB0 = ~PORTBbits.RB0;
+            break;
+        case 1:
+            PORTBbits.RB1 = ~PORTBbits.RB1;
+            break;
+        case 2:
+            PORTBbits.RB2 = ~PORTBbits.RB2;
+            break;
+        case 3:
+            PORTBbits.RB3 = ~PORTBbits.RB3;
+            break;
+        case 4:
+            PORTBbits.RB4 = ~PORTBbits.RB4;
+            break;
+        case 5:
+            PORTBbits.RB5 = ~PORTBbits.RB5;
+            break;
+        case 6:
+            PORTBbits.RB6 = ~PORTBbits.RB6;
+            break;
+        case 7:
+            PORTBbits.RB7 = ~PORTBbits.RB7;
+            break;
+        default:
+            break;
+    }
+}
+
+
+// Function to toggle led state of a bit of PORT C
+void ledToggleC(int bitNumber) {
+    switch(bitNumber) {
+        case 0:
+            PORTCbits.RC0 = ~PORTCbits.RC0;
+            break;
+        case 1:
+            PORTCbits.RC1 = ~PORTCbits.RC1;
+            break;
+        case 2:
+            PORTCbits.RC2 = ~PORTCbits.RC2;
+            break;
+        case 3:
+            PORTCbits.RC3 = ~PORTCbits.RC3;
+            break;
+        case 4:
+            PORTCbits.RC4 = ~PORTCbits.RC4;
+            break;
+        case 5:
+            PORTCbits.RC5 = ~PORTCbits.RC5;
+            break;
+        case 6:
+            PORTCbits.RC6 = ~PORTCbits.RC6;
+            break;
+        case 7:
+            PORTCbits.RC7 = ~PORTCbits.RC7;
+            break;
+        default:
+            break;
+    }
+}
+
+
+// Function to toggle led state of a bit of PORT D
+void ledToggleD(int bitNumber) {
+    switch(bitNumber) {
+        case 0:
+            PORTDbits.RD0 = ~PORTDbits.RD0;
+            break;
+        case 1:
+            PORTDbits.RD1 = ~PORTDbits.RD1;
+            break;
+        case 2:
+            PORTDbits.RD2 = ~PORTDbits.RD2;
+            break;
+        case 3:
+            PORTDbits.RD3 = ~PORTDbits.RD3;
+            break;
+        case 4:
+            PORTDbits.RD4 = ~PORTDbits.RD4;
+            break;
+        case 5:
+            PORTDbits.RD5 = ~PORTDbits.RD5;
+            break;
+        case 6:
+            PORTDbits.RD6 = ~PORTDbits.RD6;
+            break;
+        case 7:
+            PORTDbits.RD7 = ~PORTDbits.RD7;
+            break;
+        default:
+            break;
+    }
+}
+
+
+void customDefineMode(int mode) {
+        if(checkRE0Pressed()){
+            // Move cursor right
+            if (cursorPosition[0] < 3) {
+                cursorPosition[0]++;
+            }
+        }
+        if(checkRE1Pressed()){
+            // Move cursor down
+            if (cursorPosition[1] < 7) {
+                cursorPosition[1]++;
+            }
+        }
+        if(checkRE2Pressed()){
+            // Move cursor up
+            if (cursorPosition[1] > 0) {
+                cursorPosition[1]--;
+            }
+        }
+        if(checkRE3Pressed()){
+            // Move cursor left
+            if (cursorPosition[0] > 0) {
+                cursorPosition[0]--;
+            }
+        }
+        if(checkRE4Pressed()){
+            // Toggle LED state
+            // cursorPosition[0]: PORTA, cursorPosition[1]: PORTB,
+            // cursorPosition[2]: PORTC, cursorPosition[3]: PORTD
+            if (cursorPosition[0] == 0) {
+                // Cursor is on PORT A
+                ledToggleA(cursorPosition[1]);
+
+            } else if (cursorPosition[0] == 1) {
+                // Cursor is on PORT B
+                ledToggleB(cursorPosition[1]);
+
+            } else if (cursorPosition[0] == 2) {
+                // Cursor is on PORT C
+                ledToggleC(cursorPosition[1]);
+
+            } else if (cursorPosition[0] == 3) {
+                // Cursor is on PORT D
+                ledToggleD(cursorPosition[1]);
+
+            }
+        }
+        if(checkRE5Pressed()){
+            // Reset the cursor position
+            cursorPosition[0] = 0;
+            cursorPosition[1] = 0;
+            // Save the custom character to the custom character array
+            customMap[customCharCount][0] = ((PORTA & 0x01) << 4) + ((PORTB & 0x01) << 3) + ((PORTC & 0x01) << 2) + ((PORTD & 0x01) << 1);
+            customMap[customCharCount][1] = ((PORTA & 0x02) << 4) + ((PORTB & 0x02) << 3) + ((PORTC & 0x02) << 2) + ((PORTD & 0x02) << 1);
+            customMap[customCharCount][2] = ((PORTA & 0x04) << 4) + ((PORTB & 0x04) << 3) + ((PORTC & 0x04) << 2) + ((PORTD & 0x04) << 1);
+            customMap[customCharCount][3] = ((PORTA & 0x08) << 4) + ((PORTB & 0x08) << 3) + ((PORTC & 0x08) << 2) + ((PORTD & 0x08) << 1);
+            customMap[customCharCount][4] = ((PORTA & 0x10) << 4) + ((PORTB & 0x10) << 3) + ((PORTC & 0x10) << 2) + ((PORTD & 0x10) << 1);
+            customMap[customCharCount][5] = ((PORTA & 0x20) << 4) + ((PORTB & 0x20) << 3) + ((PORTC & 0x20) << 2) + ((PORTD & 0x20) << 1);
+            customMap[customCharCount][6] = ((PORTA & 0x40) << 4) + ((PORTB & 0x40) << 3) + ((PORTC & 0x40) << 2) + ((PORTD & 0x40) << 1);
+            customMap[customCharCount][7] = ((PORTA & 0x80) << 4) + ((PORTB & 0x80) << 3) + ((PORTC & 0x80) << 2) + ((PORTD & 0x80) << 1);
+            // Increment custom character count by 1(max 8)
+            customCharCount++;
+            // TODO: Print the created custom character on LCD screen
+            // TODO: If implemented, copy values back to the ports
+            // Go to TEM
+            
+uint8_t charmap[8] = {
+  0b00000,
+  0b00000,
+  0b01010,
+  0b11111,
+  0b11111,
+  0b01110,
+  0b00100,
+  0b00000,
+};
+PORTBbits.RB2 = 0;
+  SendBusContents(0x80);
+
+  // Start sending charmap
+  for(int i=0; i<8; i++){
+    PORTBbits.RB2 = 1; // Send Data
+    SendBusContents(charmap[i]);
+  }
+            mode = 0;
+        }
+}
+
+void shiftCharArray(){
+    int temp=characterIndexArray[0];
+    for(int i=0;i<15;i++){
+        characterIndexArray[i]=characterIndexArray[i+1];
+    }
+    characterIndexArray[15]=temp;
+}
+
+void scrollText(){
+    
+    
+    shiftCharArray();
+    PORTBbits.RB2 = 0;
+    //SendBusContents(0x01);
+    for(int i=0;i<=15;i++){
+        PORTBbits.RB2 = 0;
+        SendBusContents(0xc0|(15-i & 0xff));
+        __delay_ms(10);
+        PORTBbits.RB2 = 1;
+        SendBusContents(PREDEFINED[characterIndexArray[15-i]]);
+        __delay_ms(10);
+    }
 }
 
 
 void main(void) {
     
     initPorts();
+    tmr_init();
     init_interrupt();
     InitLCD();
     __delay_ms(30);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x2C); // 2LINE
+    SendBusContents(0x0C);
+    SendBusContents(0x0e); // Display on, cursor off, blink off.
+    SendBusContents(0x01);
+    GODONE=1;
+    
     // text entry mode
     // ADC position set
     // RE2 forward cycle
@@ -304,7 +573,6 @@ void main(void) {
     // if RE4 pressed character define mode
     // if RE5 pressed text scroll mode
     
-    int mode = 0; //0 -> text mode, 1 -> custom mode, 2 -> scroll mode
     while(1){
         if(mode == 0){ // TEM
             
@@ -321,6 +589,12 @@ void main(void) {
                 
             }
             if(checkRE4Pressed()){
+                // Clear all ports to use in CDM
+                // Consider copying the values before resetting ports
+                PORTA = 0x00;
+                PORTB = 0x00;
+                PORTC = 0x00;
+                PORTD = 0x00;
                 mode = 1;
             }
             if(checkRE5Pressed()){
@@ -329,8 +603,19 @@ void main(void) {
             
             
         }else if(mode == 1){ //CCD
+            customDefineMode(mode);
             
         }else if(mode == 2){ // SCROLL
+            PIE1bits.ADIE = 0;
+            GODONE = 0;
+            PORTBbits.RB2 = 0;
+            SendBusContents(0x01);
+            SendBusContents(0x0C); // cursor? durdur??
+            
+            while(1){
+                scrollText();
+                __delay_ms(300);
+            }
             
         }
     }
