@@ -1,9 +1,15 @@
+/*
+ * We are using Timer 0 with 1:256 prescaler for seven segment display and
+ * scroll mode.
+ */
+
 #include <xc.h>
 #include "Includes.h"
 #include "lcd.h"
 #include <stdio.h>
 
-uint8_t clockCounter = 0;
+uint8_t clockCounter1 = 0;
+uint8_t clockCounter2 = 0;
 uint8_t digitNum = 0;
 uint8_t customCharCount = 0;
 uint8_t ledPositionColumn = 0;
@@ -27,6 +33,8 @@ int cursorPosition[2] = {0, 0};
 
 void tmr0_isr();
 void adc_isr();
+void scrollText();
+void shiftCharArray();
 
 void __interrupt(high_priority) highPriorityISR(void) {
     if (INTCONbits.TMR0IF) tmr0_isr();
@@ -65,6 +73,10 @@ uint8_t lcdRow[16] = {
 };
 
 int characterIndexArray[16]={
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+};
+
+int customCharacterIndexArray[16]={
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 };
 
@@ -149,11 +161,14 @@ void sevenSegment(){
 void tmr0_isr(){
     INTCONbits.TMR0IF = 0;
     /********************/
-    clockCounter ++;
-    if(clockCounter % 2 == 0){
-        sevenSegment();
+    sevenSegment();
+    if(mode == 2){
+        clockCounter2++;
+        if(clockCounter2 == 76){
+            clockCounter2 = 0;
+            scrollText();
+        }
     }
-    
 }
 
 void adc_isr() {
@@ -162,8 +177,7 @@ void adc_isr() {
     unsigned int result = (ADRESH << 8) + ADRESL;
     if(mode!=2){
         cursorIndex = result / 64; 
-        PORTBbits.RB2 = 0;
-        SendBusContents(0x80|(cursorIndex & 0xff));
+
     }
     
     GODONE=1;
@@ -172,8 +186,7 @@ void adc_isr() {
 
 
 void tmr_init() {
-    T0CON = 0xC7; 
-    T1CON = 0x81; 
+    T0CON = 0xC7;
     //tmr_preload();
 }
 
@@ -299,6 +312,25 @@ void scrollInPredefinedChars(int backwardOrForward){ //0 if bacward, 1 if forwar
 
 void scrollInCustomChars(int backwardOrForward){ //0 if backward, 1 if forward
     
+    if(backwardOrForward == 0){
+        if(customCharacterIndexArray[cursorIndex]==0){
+            customCharacterIndexArray[cursorIndex]=customCharCount+1;
+        }
+        customCharacterIndexArray[cursorIndex] -- ;
+    }else if(backwardOrForward == 1){
+        
+        if(customCharacterIndexArray[cursorIndex]==customCharCount){
+            customCharacterIndexArray[cursorIndex]=-1;
+        }
+        customCharacterIndexArray[cursorIndex]++; 
+    }
+    PORTBbits.RB2 = 1;
+    if(customCharacterIndexArray[cursorIndex] == 0){
+        SendBusContents(PREDEFINED[0]);
+    } else {
+        SendBusContents(customCharacterIndexArray[cursorIndex]-1);
+    }
+
 }
 
 
@@ -306,30 +338,30 @@ void scrollInCustomChars(int backwardOrForward){ //0 if backward, 1 if forward
 void ledToggleA(int bitNumber) {
     switch(bitNumber) {
         case 0:
-            PORTAbits.RA0 = ~PORTAbits.RA0;
+            LATAbits.LA0 = ~LATAbits.LA0;
             break;
         case 1:
-            PORTAbits.RA1 = ~PORTAbits.RA1;
+            LATAbits.LA1 = ~LATAbits.LA1;
             break;
         case 2:
-            PORTAbits.RA2 = ~PORTAbits.RA2;
+            LATAbits.LA2 = ~LATAbits.LA2;
             break;
         case 3:
-            PORTAbits.RA3 = ~PORTAbits.RA3;
+            LATAbits.LA3 = ~LATAbits.LA3;
             break;
         case 4:
-            PORTAbits.RA4 = ~PORTAbits.RA4;
+            LATAbits.LA4 = ~LATAbits.LA4;
             break;
         case 5:
-            PORTAbits.RA5 = ~PORTAbits.RA5;
+            LATAbits.LA5 = ~LATAbits.LA5;
             break;
         case 6:
             // This bit's state won't change!
-            PORTAbits.RA6 = ~PORTAbits.RA6;
+            LATAbits.LA6 = ~LATAbits.LA6;
             break;
         case 7:
             // This bit's state won't change!
-            PORTAbits.RA7 = ~PORTAbits.RA7;
+            LATAbits.LA7 = ~LATAbits.LA7;
             break;
         default:
             break;
@@ -436,29 +468,33 @@ void ledToggleD(int bitNumber) {
 }
 
 
-void customDefineMode(int mode) {
+void customDefineMode() {
         if(checkRE0Pressed()){
             // Move cursor right
             if (cursorPosition[0] < 3) {
                 cursorPosition[0]++;
+                ledPositionColumn++;
             }
         }
         if(checkRE1Pressed()){
             // Move cursor down
             if (cursorPosition[1] < 7) {
                 cursorPosition[1]++;
+                ledPositionRow++;
             }
         }
         if(checkRE2Pressed()){
             // Move cursor up
             if (cursorPosition[1] > 0) {
                 cursorPosition[1]--;
+                ledPositionRow--;
             }
         }
         if(checkRE3Pressed()){
             // Move cursor left
             if (cursorPosition[0] > 0) {
                 cursorPosition[0]--;
+                ledPositionColumn--;
             }
         }
         if(checkRE4Pressed()){
@@ -488,39 +524,67 @@ void customDefineMode(int mode) {
             cursorPosition[0] = 0;
             cursorPosition[1] = 0;
             // Save the custom character to the custom character array
-            customMap[customCharCount][0] = ((PORTA & 0x01) << 4) + ((PORTB & 0x01) << 3) + ((PORTC & 0x01) << 2) + ((PORTD & 0x01) << 1);
-            customMap[customCharCount][1] = ((PORTA & 0x02) << 4) + ((PORTB & 0x02) << 3) + ((PORTC & 0x02) << 2) + ((PORTD & 0x02) << 1);
-            customMap[customCharCount][2] = ((PORTA & 0x04) << 4) + ((PORTB & 0x04) << 3) + ((PORTC & 0x04) << 2) + ((PORTD & 0x04) << 1);
-            customMap[customCharCount][3] = ((PORTA & 0x08) << 4) + ((PORTB & 0x08) << 3) + ((PORTC & 0x08) << 2) + ((PORTD & 0x08) << 1);
-            customMap[customCharCount][4] = ((PORTA & 0x10) << 4) + ((PORTB & 0x10) << 3) + ((PORTC & 0x10) << 2) + ((PORTD & 0x10) << 1);
-            customMap[customCharCount][5] = ((PORTA & 0x20) << 4) + ((PORTB & 0x20) << 3) + ((PORTC & 0x20) << 2) + ((PORTD & 0x20) << 1);
-            customMap[customCharCount][6] = ((PORTA & 0x40) << 4) + ((PORTB & 0x40) << 3) + ((PORTC & 0x40) << 2) + ((PORTD & 0x40) << 1);
-            customMap[customCharCount][7] = ((PORTA & 0x80) << 4) + ((PORTB & 0x80) << 3) + ((PORTC & 0x80) << 2) + ((PORTD & 0x80) << 1);
-            // Increment custom character count by 1(max 8)
-            customCharCount++;
+            customMap[customCharCount][0] = ((LATA & 0x01) << 4) + ((PORTB & 0x01) << 3) + ((PORTC & 0x01) << 2) + ((PORTD & 0x01) << 1);
+            customMap[customCharCount][1] = ((LATA & 0x02) << 3) + ((PORTB & 0x02) << 2) + ((PORTC & 0x02) << 1) + ((PORTD & 0x02));
+            customMap[customCharCount][2] = ((LATA & 0x04) << 2) + ((PORTB & 0x04) << 1) + ((PORTC & 0x04)) + ((PORTD & 0x04) >> 1);
+            customMap[customCharCount][3] = ((LATA & 0x08) << 1) + ((PORTB & 0x08)) + ((PORTC & 0x08) >> 1) + ((PORTD & 0x08) >> 2);
+            customMap[customCharCount][4] = ((LATA & 0x10)) + ((PORTB & 0x10) >> 1) + ((PORTC & 0x10) >> 2) + ((PORTD & 0x10) >> 3);
+            customMap[customCharCount][5] = ((LATA & 0x20) >> 1) + ((PORTB & 0x20) >> 2) + ((PORTC & 0x20) >> 3) + ((PORTD & 0x20) >> 4);
+            customMap[customCharCount][6] = ((LATA & 0x40) >> 2) + ((PORTB & 0x40) >> 3) + ((PORTC & 0x40) >> 4) + ((PORTD & 0x40) >> 5);
+            customMap[customCharCount][7] = ((LATA & 0x80) >> 3) + ((PORTB & 0x80) >> 4) + ((PORTC & 0x80) >> 5) + ((PORTD & 0x80) >> 6);
+
+            ledPositionRow = 0;
+            ledPositionColumn = 0;
             // TODO: Print the created custom character on LCD screen
             // TODO: If implemented, copy values back to the ports
             // Go to TEM
-            
-uint8_t charmap[8] = {
-  0b00000,
-  0b00000,
-  0b01010,
-  0b11111,
-  0b11111,
-  0b01110,
-  0b00100,
-  0b00000,
-};
-PORTBbits.RB2 = 0;
-  SendBusContents(0x80);
-
-  // Start sending charmap
-  for(int i=0; i<8; i++){
-    PORTBbits.RB2 = 1; // Send Data
-    SendBusContents(charmap[i]);
-  }
             mode = 0;
+            
+            uint8_t charmap[8] = {
+              0x00,
+              0x00,
+              0x0A,
+              0x1F,
+              0x1F,
+              0x0E,
+              0x04,
+              0x00,
+            };
+
+            // Define custom char LCD
+            // Set CGRAM address 0 -> 0x40
+            PORTBbits.RB2 = 0;
+            SendBusContents(0x40 |(customCharCount << 3));
+
+            // Start sending charmap
+            for(int i=0; i<8; i++){
+              PORTBbits.RB2 = 1; // Send Data
+              SendBusContents(customMap[customCharCount][i]);
+            }
+            SendBusContents(0x02);
+            PORTBbits.RB2 = 1;
+            
+            // Set DDRAM address to 0 (line 1 cell 1) -> 0x80
+            PORTBbits.RB2 = 0;
+            SendBusContents(0x80|(cursorIndex & 0xff));
+            
+            //unsigned int result = (ADRESH << 8) + ADRESL; // Get the result;
+
+            // 4bytes for ADC Res + 1 byte for custom char + 1 byte null;
+//            char buf[2];
+//            sprintf(buf, "%04u", result);
+//            buf[0]=0; // Address of custom char
+//            buf[1]=0; // Null terminator
+
+            // Write buf to LCD DDRAM
+            PORTBbits.RB2 = 1;
+            SendBusContents(customCharCount);
+            
+            // Increment custom character count by 1(max 8)
+            customCharCount++;
+            customCharacterIndexArray[cursorIndex] = customCharCount;
+//            ADCON0 = 0x31; // Channel 12; Turn on AD Converter
+//            ADCON1 = 0x00;
         }
 }
 
@@ -534,18 +598,75 @@ void shiftCharArray(){
 
 void scrollText(){
     
-    
-    shiftCharArray();
+    //INTCONbits.GIE = 0;
+    //shiftCharArray();
+    // Write "finished"
     PORTBbits.RB2 = 0;
+    SendBusContents(0x84);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[6]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x85);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[9]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x86);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[14]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x87);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[9]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x88);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[19]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x89);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[8]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x8a);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[5]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x8b);
+    PORTBbits.RB2 = 1;
+    SendBusContents(PREDEFINED[4]);
+    PORTBbits.RB2 = 0;
+    SendBusContents(0x0C);
+    
+    // Shift character array
+    int temp=characterIndexArray[0];
+    for(int i=0;i<15;i++){
+        characterIndexArray[i]=characterIndexArray[i+1];
+    }
+    characterIndexArray[15]=temp;
+
+    // Shift custom character array
+    temp=customCharacterIndexArray[0];
+    for(int i=0;i<15;i++){
+        customCharacterIndexArray[i]=customCharacterIndexArray[i+1];
+    }
+    customCharacterIndexArray[15]=temp;
+    
+    PORTBbits.RB2 = 0;
+    
     //SendBusContents(0x01);
     for(int i=0;i<=15;i++){
         PORTBbits.RB2 = 0;
-        SendBusContents(0xc0|(15-i & 0xff));
-        __delay_ms(10);
+        SendBusContents(0xC0|(15-i & 0xff));
+        
         PORTBbits.RB2 = 1;
-        SendBusContents(PREDEFINED[characterIndexArray[15-i]]);
-        __delay_ms(10);
+        // Check if char is custom
+        if(customCharacterIndexArray[15-i] == 0) {
+            SendBusContents(PREDEFINED[characterIndexArray[15-i]]);
+        } else {
+            SendBusContents(customCharacterIndexArray[15-i] - 1);
+        }
+
     }
+    //INTCONbits.GIE = 1;
 }
 
 
@@ -575,9 +696,10 @@ void main(void) {
     
     while(1){
         if(mode == 0){ // TEM
-            
+            PORTBbits.RB2 = 0;
+            SendBusContents(0x80|(cursorIndex & 0xff));
             if(checkRE0Pressed()){
-                
+                scrollInCustomChars(1);
             }
             if(checkRE1Pressed()){
                 scrollInPredefinedChars(0);
@@ -586,7 +708,7 @@ void main(void) {
                 scrollInPredefinedChars(1);
             }
             if(checkRE3Pressed()){
-                
+                scrollInCustomChars(0);
             }
             if(checkRE4Pressed()){
                 // Clear all ports to use in CDM
@@ -599,24 +721,22 @@ void main(void) {
             }
             if(checkRE5Pressed()){
                 mode = 2;
+                PIE1bits.ADIE = 0;
+                GODONE = 0;
+                PORTBbits.RB2 = 0;
+                SendBusContents(0x01);
+                SendBusContents(0x0C); // cursor? durdur??
+
             }
             
             
         }else if(mode == 1){ //CCD
-            customDefineMode(mode);
+            //ADCON0=0;
+            //ADCON1= 0x06;
+            customDefineMode();
             
         }else if(mode == 2){ // SCROLL
-            PIE1bits.ADIE = 0;
-            GODONE = 0;
-            PORTBbits.RB2 = 0;
-            SendBusContents(0x01);
-            SendBusContents(0x0C); // cursor? durdur??
-            
-            while(1){
-                scrollText();
-                __delay_ms(300);
-            }
-            
+
         }
     }
     
